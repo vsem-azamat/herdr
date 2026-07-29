@@ -305,6 +305,10 @@ fn ping_over_socket_returns_version() {
     // Intentionally hardcoded so wire protocol bumps require updating this test.
     // Changing this value means old clients/servers are no longer compatible.
     assert_eq!(value["result"]["protocol"], 18);
+    assert_eq!(
+        value["result"]["capabilities"]["agent_prompt_expected_session"],
+        true
+    );
 
     cleanup_spawned_herdr(child, base);
 }
@@ -1737,6 +1741,41 @@ fn pane_report_agent_updates_effective_state() {
         pane["result"]["pane"]["agent_session"]["value"],
         session_path.display().to_string()
     );
+
+    let stale_prompt = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "req_hook_stale_prompt",
+            "method": "agent.prompt",
+            "params": {
+                "target": pane_id.clone(),
+                "text": "private prompt",
+                "expected_session": {
+                    "source": "herdr:pi",
+                    "agent": "pi",
+                    "kind": "path",
+                    "value": base.join("replacement-session.jsonl").display().to_string()
+                }
+            }
+        })
+        .to_string(),
+    );
+    assert_eq!(stale_prompt["error"]["code"], "agent_session_mismatch");
+
+    let matching_prompt = send_request(
+        &socket_path,
+        &serde_json::json!({
+            "id": "req_hook_matching_prompt",
+            "method": "agent.prompt",
+            "params": {
+                "target": pane_id.clone(),
+                "text": "expected prompt",
+                "expected_session": pane["result"]["pane"]["agent_session"].clone()
+            }
+        })
+        .to_string(),
+    );
+    assert_eq!(matching_prompt["result"]["type"], "agent_prompted");
 
     let metadata = send_request(
         &socket_path,

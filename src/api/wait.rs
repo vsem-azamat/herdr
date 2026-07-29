@@ -219,6 +219,7 @@ pub(super) fn prompt_agent(
         &before_prompt.terminal_id,
         before_prompt.name.as_deref().filter(|name| *name == target),
         before_prompt.agent.as_deref(),
+        before_prompt.agent_session.as_ref(),
     ) {
         return agent_wait_not_running(request_id).map(Some);
     }
@@ -364,6 +365,7 @@ fn wait_for_resolved_agent(
         .filter(|name| name.as_str() == wait.target)
         .cloned();
     let expected_agent = wait.initial.agent.clone();
+    let expected_session = wait.initial.agent_session.clone();
     let pane_id = wait.initial.pane_id.clone();
     let mut last_event_sequence = wait.last_event_sequence;
 
@@ -452,6 +454,7 @@ fn wait_for_resolved_agent(
                 &expected_terminal_id,
                 expected_name.as_deref(),
                 expected_agent.as_deref(),
+                expected_session.as_ref(),
             ) {
                 return agent_wait_not_running(request_id)
                     .map(AgentWaitOutcome::Response)
@@ -481,6 +484,7 @@ fn wait_for_resolved_agent(
                 &expected_terminal_id,
                 expected_name.as_deref(),
                 expected_agent.as_deref(),
+                expected_session.as_ref(),
             ) {
                 return agent_wait_not_running(request_id)
                     .map(AgentWaitOutcome::Response)
@@ -527,9 +531,11 @@ fn agent_wait_identity_matches(
     expected_terminal_id: &str,
     expected_name: Option<&str>,
     expected_agent: Option<&str>,
+    expected_session: Option<&crate::api::schema::AgentSessionInfo>,
 ) -> bool {
     agent.terminal_id == expected_terminal_id
         && expected_name.is_none_or(|name| agent.name.as_deref() == Some(name))
+        && expected_session.is_none_or(|session| agent.agent_session.as_ref() == Some(session))
         && match (expected_agent, agent.agent.as_deref()) {
             (Some(expected), Some(current)) => expected == current,
             (Some(_), None) => agent.name.is_some(),
@@ -782,6 +788,48 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_wait_identity_pins_native_session() {
+        let session_a = crate::api::schema::AgentSessionInfo {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "session-a".into(),
+        };
+        let session_b = crate::api::schema::AgentSessionInfo {
+            value: "session-b".into(),
+            ..session_a.clone()
+        };
+        let agent: crate::api::schema::AgentInfo = serde_json::from_value(serde_json::json!({
+            "terminal_id": "terminal-1",
+            "agent": "codex",
+            "agent_status": "working",
+            "agent_session": session_a,
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": false,
+            "state_change_seq": 1,
+            "revision": 1
+        }))
+        .unwrap();
+
+        assert!(agent_wait_identity_matches(
+            &agent,
+            "terminal-1",
+            None,
+            Some("codex"),
+            agent.agent_session.as_ref(),
+        ));
+        assert!(!agent_wait_identity_matches(
+            &agent,
+            "terminal-1",
+            None,
+            Some("codex"),
+            Some(&session_b),
+        ));
+    }
 
     #[test]
     fn agent_wait_probe_only_translates_agent_disappearance() {

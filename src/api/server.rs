@@ -67,6 +67,7 @@ pub fn start_server(
         Some(ServerCapabilities {
             live_handoff: crate::platform::capabilities().live_handoff,
             detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
+            agent_prompt_expected_session: true,
         }),
     )
 }
@@ -1007,13 +1008,21 @@ mod tests {
             Some(ServerCapabilities {
                 live_handoff: true,
                 detached_server_daemon: true,
+                agent_prompt_expected_session: true,
             }),
             None,
         );
 
         let parsed: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed.id, "req_1");
-        assert!(matches!(parsed.result, ResponseResult::Pong { .. }));
+        let ResponseResult::Pong {
+            capabilities: Some(capabilities),
+            ..
+        } = parsed.result
+        else {
+            panic!("expected pong capabilities");
+        };
+        assert!(capabilities.agent_prompt_expected_session);
     }
 
     #[test]
