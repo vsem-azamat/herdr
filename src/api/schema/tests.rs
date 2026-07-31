@@ -86,6 +86,7 @@ fn agent_start_and_prompt_requests_round_trip() {
         method: Method::AgentPrompt(AgentPromptParams {
             target: "reviewer".into(),
             text: "review this".into(),
+            expected_session: None,
             wait: None,
         }),
     };
@@ -96,11 +97,18 @@ fn agent_start_and_prompt_requests_round_trip() {
         prompt
     );
 
+    let expected_session = AgentSessionInfo {
+        source: "herdr:codex".into(),
+        agent: "codex".into(),
+        kind: crate::agent_resume::AgentSessionRefKind::Id,
+        value: "session-a".into(),
+    };
     let prompt_and_wait = Request {
         id: "prompt-and-wait".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             target: "reviewer".into(),
             text: "review this".into(),
+            expected_session: Some(expected_session.clone()),
             wait: Some(AgentPromptWaitOptions {
                 until: vec![AgentStatus::Idle, AgentStatus::Done],
                 timeout_ms: Some(120_000),
@@ -115,6 +123,10 @@ fn agent_start_and_prompt_requests_round_trip() {
     assert_eq!(
         prompt_and_wait_json["params"]["wait"]["timeout_ms"],
         120_000
+    );
+    assert_eq!(
+        prompt_and_wait_json["params"]["expected_session"],
+        serde_json::to_value(expected_session).unwrap()
     );
     assert_eq!(
         serde_json::from_value::<Request>(prompt_and_wait_json).unwrap(),
@@ -640,6 +652,7 @@ fn success_response_round_trips() {
             capabilities: Some(ServerCapabilities {
                 live_handoff: true,
                 detached_server_daemon: true,
+                agent_prompt_expected_session: true,
             }),
         },
     };
@@ -647,6 +660,9 @@ fn success_response_round_trips() {
     let json = serde_json::to_string(&response).unwrap();
     let restored: SuccessResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(restored, response);
+
+    let legacy: ServerCapabilities = serde_json::from_str(r#"{"live_handoff":false}"#).unwrap();
+    assert!(!legacy.agent_prompt_expected_session);
 }
 
 #[test]

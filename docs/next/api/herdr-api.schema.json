@@ -1224,6 +1224,16 @@
       "$defs": {
         "AgentPromptParams": {
           "properties": {
+            "expected_session": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/AgentSessionInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "target": {
               "type": "string"
             },
@@ -1331,6 +1341,36 @@
             "keys"
           ],
           "type": "object"
+        },
+        "AgentSessionInfo": {
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/AgentSessionRefKind"
+            },
+            "source": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "agent",
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        "AgentSessionRefKind": {
+          "enum": [
+            "id",
+            "path"
+          ],
+          "type": "string"
         },
         "AgentStartParams": {
           "properties": {
@@ -9656,6 +9696,10 @@
         },
         "ServerCapabilities": {
           "properties": {
+            "agent_prompt_expected_session": {
+              "default": false,
+              "type": "boolean"
+            },
             "detached_server_daemon": {
               "default": false,
               "type": "boolean"

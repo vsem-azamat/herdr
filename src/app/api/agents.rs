@@ -79,6 +79,15 @@ impl App {
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
             return agent_not_found(id, &params.target);
         };
+        if params.expected_session.as_ref().is_some_and(|expected| {
+            super::super::creation::terminal_agent_session_info(terminal).as_ref() != Some(expected)
+        }) {
+            return encode_error(
+                id,
+                "agent_session_mismatch",
+                "agent target no longer hosts the expected session",
+            );
+        }
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return agent_not_ready(id, &params.target);
         };
@@ -312,6 +321,53 @@ mod tests {
         app
     }
 
+    fn codex_session(value: &str) -> crate::api::schema::AgentSessionInfo {
+        crate::api::schema::AgentSessionInfo {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: value.into(),
+        }
+    }
+
+    fn set_codex_session(app: &mut App, terminal_id: &crate::terminal::TerminalId, value: &str) {
+        app.state
+            .terminals
+            .get_mut(terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:codex".into(),
+                agent: "codex".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id(value).unwrap(),
+            });
+    }
+
+    fn app_with_codex_session(
+        session: Option<&str>,
+    ) -> (
+        App,
+        crate::layout::PaneId,
+        crate::terminal::TerminalId,
+        tokio::sync::mpsc::Receiver<Bytes>,
+    ) {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Codex), AgentState::Working);
+        if let Some(session) = session {
+            set_codex_session(&mut app, &terminal_id, session);
+        }
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        (app, pane_id, terminal_id, rx)
+    }
+
     #[tokio::test]
     async fn agent_prompt_sends_text_then_delays_enter() {
         let mut app = app_with_agent();
@@ -336,6 +392,7 @@ mod tests {
             AgentPromptParams {
                 target: public_pane_id,
                 text: "A != B".into(),
+                expected_session: None,
                 wait: None,
             },
         );
@@ -367,6 +424,7 @@ mod tests {
             AgentPromptParams {
                 target: "reviewer".into(),
                 text: "A != B".into(),
+                expected_session: None,
                 wait: None,
             },
         );
@@ -388,12 +446,89 @@ mod tests {
             AgentPromptParams {
                 target: "opencode".into(),
                 text: "wrong target".into(),
+                expected_session: None,
                 wait: None,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_rejects_replaced_expected_session_without_input() {
+        let (mut app, pane_id, _terminal_id, mut rx) = app_with_codex_session(Some("session-b"));
+        let response = app.handle_agent_prompt(
+            "req-replaced".into(),
+            AgentPromptParams {
+                target: app.public_pane_id(0, pane_id).unwrap(),
+                text: "private prompt".into(),
+                expected_session: Some(codex_session("session-a")),
+                wait: None,
+            },
+        );
+
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_session_mismatch");
+        assert_eq!(
+            error.error.message,
+            "agent target no longer hosts the expected session"
+        );
+        assert!(rx.try_recv().is_err());
+        tokio::time::sleep(AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(20)).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_rejects_missing_expected_session_without_input() {
+        let (mut app, pane_id, _terminal_id, mut rx) = app_with_codex_session(None);
+        let response = app.handle_agent_prompt(
+            "req-missing".into(),
+            AgentPromptParams {
+                target: app.public_pane_id(0, pane_id).unwrap(),
+                text: "private prompt".into(),
+                expected_session: Some(codex_session("session-a")),
+                wait: None,
+            },
+        );
+
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_session_mismatch");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_commits_before_later_session_replacement() {
+        let (mut app, pane_id, terminal_id, mut rx) = app_with_codex_session(Some("session-a"));
+        let expected_session = codex_session("session-a");
+        let response = app.handle_agent_prompt(
+            "req-match".into(),
+            AgentPromptParams {
+                target: app.public_pane_id(0, pane_id).unwrap(),
+                text: "expected prompt".into(),
+                expected_session: Some(expected_session.clone()),
+                wait: None,
+            },
+        );
+
+        set_codex_session(&mut app, &terminal_id, "session-b");
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentPrompted { agent } = success.result else {
+            panic!("expected prompted response");
+        };
+        assert_eq!(agent.agent_session, Some(expected_session));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"expected prompt")
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            Bytes::from_static(b"\r")
+        );
     }
 
     #[tokio::test]
@@ -458,6 +593,7 @@ mod tests {
             AgentPromptParams {
                 target: "reviewer".into(),
                 text: "A != B".into(),
+                expected_session: None,
                 wait: None,
             },
         );
